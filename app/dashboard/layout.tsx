@@ -19,7 +19,10 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
-  if (!session?.user?.id) redirect('/auth/signin');
+  // Guard on email — always present after Google OAuth.
+  // Do NOT guard on session.user.id; that requires the Supabase upsert to have
+  // succeeded, which may fail if SUPABASE_SERVICE_ROLE_KEY is misconfigured.
+  if (!session?.user?.email) redirect('/auth/signin');
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
