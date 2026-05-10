@@ -120,6 +120,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.name  = (token.name    ?? session.user.name)  as string;
       session.user.image = (token.picture ?? session.user.image) as string;
       session.user.email = (token.email   ?? session.user.email) as string;
+
+      // Expose OAuth tokens server-side so API routes can call Gmail directly
+      // without depending on the Supabase sessions table being populated.
+      // These are never sent to the browser (JWT strategy = HttpOnly cookie only).
+      (session as any).access_token     = token.access_token     ?? null;
+      (session as any).refresh_token    = token.refresh_token    ?? null;
+      (session as any).token_expires_at = token.token_expires_at ?? null;
+
       return session;
     },
   },

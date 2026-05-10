@@ -1,118 +1,155 @@
 import { createAdminClient } from '@/lib/supabase/server';
 import { google } from 'googleapis';
 
+interface TokenSet {
+  access_token: string;
+  refresh_token?: string | null;
+  token_expires_at?: number | null;
+}
+
 /**
- * Fetches new emails from Gmail for the given user and stores them in Supabase.
- * Only processes messages received after the most recent email already in the DB.
+ * Fetches new unread emails from Gmail and upserts them into the emails table.
+ *
+ * Accepts token directly (from NextAuth JWT) so it works even if the Supabase
+ * sessions table has not been populated yet.
  */
-export async function pollInbox(userId: string): Promise<void> {
+export async function pollInbox(
+  userId: string,
+  tokenSet?: TokenSet
+): Promise<{ inserted: number; skipped: number }> {
   const supabase = createAdminClient();
 
-  // Retrieve the stored OAuth tokens for this user
-  const { data: session, error: sessionError } = await supabase
-    .from('sessions')
-    .select('access_token, refresh_token, token_expires_at')
-    .eq('user_id', userId)
-    .eq('provider', 'google')
-    .single();
+  // ── 1. Resolve credentials ──────────────────────────────────────────────────
+  let credentials: TokenSet | null = tokenSet ?? null;
 
-  if (sessionError || !session) {
-    throw new Error('No Google OAuth session found. Please sign out and sign back in.');
+  if (!credentials) {
+    // Fall back to the sessions table (works after user has signed in at least once
+    // with the correct service role key in place)
+    const { data: storedSession } = await supabase
+      .from('sessions')
+      .select('access_token, refresh_token, token_expires_at')
+      .eq('user_id', userId)
+      .eq('provider', 'google')
+      .maybeSingle();
+
+    if (storedSession) {
+      credentials = storedSession;
+    }
   }
 
-  // Set up the OAuth2 client
+  if (!credentials?.access_token) {
+    throw new Error(
+      'No Gmail credentials found. Please sign out and sign back in so the ' +
+      'system can store your OAuth tokens.'
+    );
+  }
+
+  // ── 2. Build OAuth2 client ──────────────────────────────────────────────────
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET
   );
 
   oauth2Client.setCredentials({
-    access_token:  session.access_token,
-    refresh_token: session.refresh_token,
-    expiry_date:   session.token_expires_at,
+    access_token:  credentials.access_token,
+    refresh_token: credentials.refresh_token ?? undefined,
+    expiry_date:   credentials.token_expires_at ?? undefined,
   });
 
-  // Auto-refresh the token and persist the new one if it changed
+  // Persist refreshed tokens when they rotate
   oauth2Client.on('tokens', async (tokens) => {
-    await supabase
-      .from('sessions')
-      .update({
-        access_token:     tokens.access_token ?? session.access_token,
-        token_expires_at: tokens.expiry_date  ?? session.token_expires_at,
-      })
-      .eq('user_id', userId)
-      .eq('provider', 'google');
+    if (tokens.access_token) {
+      await supabase
+        .from('sessions')
+        .upsert(
+          {
+            user_id:          userId,
+            provider:         'google',
+            access_token:     tokens.access_token,
+            refresh_token:    tokens.refresh_token ?? credentials!.refresh_token ?? null,
+            token_expires_at: tokens.expiry_date   ?? credentials!.token_expires_at ?? null,
+          },
+          { onConflict: 'user_id,provider' }
+        );
+    }
   });
 
+  // ── 3. List Gmail messages ──────────────────────────────────────────────────
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-  // Fetch the 20 most recent inbox messages
   const listRes = await gmail.users.messages.list({
-    userId: 'me',
-    maxResults: 20,
-    labelIds: ['INBOX'],
-    q: 'is:unread',
+    userId:     'me',
+    maxResults: 50,
+    labelIds:   ['INBOX'],
+    // Remove is:unread filter so ALL inbox messages are visible, not just unread
   });
 
   const messages = listRes.data.messages ?? [];
-  if (messages.length === 0) return;
+
+  let inserted = 0;
+  let skipped  = 0;
 
   for (const msg of messages) {
     if (!msg.id) continue;
 
-    // Skip if already stored
+    // Skip duplicates
     const { data: existing } = await supabase
       .from('emails')
       .select('id')
       .eq('gmail_message_id', msg.id)
       .maybeSingle();
 
-    if (existing) continue;
+    if (existing) { skipped++; continue; }
 
     // Fetch full message
     const fullMsg = await gmail.users.messages.get({
       userId: 'me',
-      id: msg.id,
+      id:     msg.id,
       format: 'full',
     });
 
-    const headers = fullMsg.data.payload?.headers ?? [];
-    const get = (name: string) =>
+    const headers  = fullMsg.data.payload?.headers ?? [];
+    const getH     = (name: string) =>
       headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? null;
 
-    const fromHeader  = get('From') ?? '';
-    const subject     = get('Subject');
-    const dateHeader  = get('Date');
+    const fromHeader = getH('From') ?? '';
+    const subject    = getH('Subject');
+    const dateHeader = getH('Date');
 
     // Parse "Name <email>" or bare "email"
     const fromMatch   = fromHeader.match(/^(?:"?([^"<]+)"?\s+)?<?([^>]+)>?$/);
     const senderName  = fromMatch?.[1]?.trim() ?? null;
     const senderEmail = (fromMatch?.[2]?.trim() ?? fromHeader).toLowerCase();
 
-    const hasAttachment = (fullMsg.data.payload?.parts ?? [])
-      .some((p) => p.filename && p.filename.length > 0);
-
-    const attachmentFilename = (fullMsg.data.payload?.parts ?? [])
-      .find((p) => p.filename && p.filename.length > 0)?.filename ?? null;
+    const parts           = fullMsg.data.payload?.parts ?? [];
+    const hasAttachment   = parts.some((p) => p.filename && p.filename.length > 0);
+    const attachmentFile  = parts.find((p) => p.filename && p.filename.length > 0)?.filename ?? null;
 
     const receivedAt = dateHeader
       ? new Date(dateHeader).toISOString()
-      : new Date().toISOString();
+      : new Date(Number(fullMsg.data.internalDate ?? Date.now())).toISOString();
 
     const snippet = fullMsg.data.snippet ?? '';
 
-    // Store in Supabase
-    await supabase.from('emails').insert({
-      gmail_message_id:   msg.id,
-      sender_name:        senderName,
-      sender_email:       senderEmail,
+    const { error: insertError } = await supabase.from('emails').insert({
+      gmail_message_id:    msg.id,
+      sender_name:         senderName,
+      sender_email:        senderEmail,
       subject,
-      body_text:          snippet, // Required by DB
-      body_snippet:       snippet, // Used for AI
-      has_attachment:     hasAttachment,
-      attachment_filename: attachmentFilename,
-      received_at:        receivedAt,
-      processed:          false,
+      body_text:           snippet,
+      body_snippet:        snippet,
+      has_attachment:      hasAttachment,
+      attachment_filename: attachmentFile,
+      received_at:         receivedAt,
+      processed:           false,
     });
+
+    if (insertError) {
+      console.error('[poller] insert error for', msg.id, insertError.message);
+    } else {
+      inserted++;
+    }
   }
+
+  return { inserted, skipped };
 }

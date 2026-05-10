@@ -1,4 +1,4 @@
-import { createServerClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/server';
 import { CandidateChat } from '@/components/candidates/CandidateChat';
 import { ScoreBadge } from '@/components/candidates/ScoreBadge';
 import { Badge } from '@/components/ui/badge';
@@ -8,7 +8,7 @@ import { Mail, Phone, MapPin, Briefcase, GraduationCap } from 'lucide-react';
 export const revalidate = 0;
 
 export default async function CandidateProfilePage({ params }: { params: { id: string } }) {
-  const supabase = createServerClient();
+  const supabase = createAdminClient();
   const { data: candidate } = await supabase
     .from('candidates')
     .select('*')

@@ -66,7 +66,7 @@ create table candidates (
   resume_text          text,           -- Plain text extracted from PDF
   skills               text[] default '{}',
   experience_years     int,
-  current_role         text,
+  "current_role"       text,
   current_company      text,
   education            jsonb default '[]',
   work_history         jsonb default '[]',

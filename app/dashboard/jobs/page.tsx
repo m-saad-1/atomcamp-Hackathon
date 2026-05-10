@@ -1,11 +1,11 @@
-import { createServerClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/server';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
 export const revalidate = 0;
 
 export default async function JobsPage() {
-  const supabase = createServerClient();
+  const supabase = createAdminClient();
   const { data: jobs } = await supabase
     .from('jobs')
     .select('*')
