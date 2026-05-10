@@ -29,65 +29,70 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
 
+  session: { strategy: 'jwt' },
+
   callbacks: {
-    async jwt({ token, account, user }) {
-      if (account && user) {
-        token.access_token = account.access_token;
-        token.refresh_token = account.refresh_token;
+    async jwt({ token, account, profile }) {
+      if (account && profile) {
+        token.access_token     = account.access_token;
+        token.refresh_token    = account.refresh_token;
         token.token_expires_at = account.expires_at
           ? account.expires_at * 1000
           : Date.now() + 3600 * 1000;
-        token.scope = account.scope;
-        
-        // Upsert user into our users table to get a valid UUID
-        const { data: dbUser } = await supabaseAdmin.from('users').upsert({
-          email: user.email!,
-          name: user.name,
-          avatar_url: user.image,
-        }, { onConflict: 'email' }).select('id').single();
-        
-        if (dbUser) {
-          token.db_user_id = dbUser.id;
-        }
-      }
+        token.scope            = account.scope;
+        token.picture          = (profile as any).picture ?? null;
+        token.name             = (profile as any).name ?? null;
 
-      // Ensure db_user_id is populated on subsequent requests if it was missed
-      if (!token.db_user_id && token.email) {
-        const { data: dbUser } = await supabaseAdmin
+        const { data: user } = await supabaseAdmin
           .from('users')
+          .upsert(
+            {
+              email:      (profile as any).email,
+              name:       (profile as any).name ?? null,
+              avatar_url: (profile as any).picture ?? null,
+            },
+            { onConflict: 'email' }
+          )
           .select('id')
-          .eq('email', token.email)
           .single();
-        if (dbUser) {
-          token.db_user_id = dbUser.id;
+
+        if (user) {
+          token.db_user_id = user.id;
+
+          await supabaseAdmin
+            .from('sessions')
+            .upsert(
+              {
+                user_id:          user.id,
+                provider:         'google',
+                access_token:     account.access_token!,
+                refresh_token:    account.refresh_token ?? null,
+                token_expires_at: token.token_expires_at as number,
+                scope:            account.scope ?? null,
+              },
+              { onConflict: 'user_id,provider' }
+            );
         }
       }
-
       return token;
     },
 
     async session({ session, token }) {
-      if (token.db_user_id && token.access_token) {
-        if (token.refresh_token) {
-          await supabaseAdmin.from('sessions').upsert(
-            {
-              user_id: token.db_user_id,
-              provider: 'google',
-              access_token: token.access_token as string,
-              refresh_token: (token.refresh_token as string) ?? null,
-              token_expires_at: token.token_expires_at as number,
-              scope: (token.scope as string) ?? null,
-            },
-            { onConflict: 'user_id,provider' }
-          );
-        }
-        session.user.id = token.db_user_id as string;
+      if (token.db_user_id) {
+        session.user.id    = token.db_user_id as string;
+      }
+      if (token.name) {
+        session.user.name  = token.name as string;
+      }
+      if (token.picture) {
+        session.user.image = token.picture as string;
       }
       return session;
-    }
+    },
   },
+
   pages: {
     signIn: '/auth/signin',
-    error: '/auth/error'
-  }
+    error:  '/auth/error',
+  },
 });

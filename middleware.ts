@@ -1,14 +1,15 @@
-import { auth } from '@/auth';
-
-export default auth((req) => {
-  const { nextUrl } = req;
-  const isAuthenticated = !!req.auth;
-  
-  if (nextUrl.pathname.startsWith('/dashboard') && !isAuthenticated) {
-    return Response.redirect(new URL('/api/auth/signin', nextUrl));
-  }
-});
+export { auth as middleware } from '@/auth';
 
 export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  matcher: [
+    '/dashboard/:path*',
+    '/api/candidates/:path*',
+    '/api/emails/:path*',
+    '/api/approvals/:path*',
+    '/api/jobs/:path*',
+    '/api/resumes/:path*',
+    '/api/slack/:path*',
+    '/api/gmail/:path*',
+    '/api/dashboard/:path*',
+  ],
 };
