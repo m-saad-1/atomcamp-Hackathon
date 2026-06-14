@@ -79,9 +79,8 @@ export async function pollInbox(
 
   const listRes = await gmail.users.messages.list({
     userId:     'me',
-    maxResults: 50,
-    labelIds:   ['INBOX'],
-    // Remove is:unread filter so ALL inbox messages are visible, not just unread
+    maxResults: 200,
+    q:          'in:inbox',
   });
 
   const messages = listRes.data.messages ?? [];

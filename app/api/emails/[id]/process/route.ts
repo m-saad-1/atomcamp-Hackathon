@@ -2,8 +2,36 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { createAdminClient } from '@/lib/supabase/server';
 import OpenAI from 'openai';
+import { google } from 'googleapis';
+const pdfParse = require('pdf-parse');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+function getBodyText(payload: any): string {
+  if (!payload) return '';
+  if (payload.body && payload.body.data) {
+    return Buffer.from(payload.body.data, 'base64url').toString('utf-8');
+  }
+  if (payload.parts) {
+    let text = '';
+    for (const part of payload.parts) {
+      if (part.mimeType === 'text/plain' && part.body?.data) {
+        text += Buffer.from(part.body.data, 'base64url').toString('utf-8');
+      } else if (part.parts) {
+        text += getBodyText(part);
+      }
+    }
+    if (text) return text;
+    // Fallback to text/html if plain doesn't exist
+    for (const part of payload.parts) {
+      if (part.mimeType === 'text/html' && part.body?.data) {
+        text += Buffer.from(part.body.data, 'base64url').toString('utf-8');
+      }
+    }
+    return text;
+  }
+  return '';
+}
 
 export async function POST(
   _req: NextRequest,
@@ -14,9 +42,14 @@ export async function POST(
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
 
+  const s = session as any;
+  if (!s.access_token) {
+    return NextResponse.json({ error: 'NO_GMAIL_TOKEN', message: 'Please sign out and back in to refresh Gmail permissions.' }, { status: 401 });
+  }
+
   const supabase   = createAdminClient();
   const emailId    = params.id;
-  const recruiterId = session.user.id; // Always from session — never from request body
+  const recruiterId = session.user.id;
 
   // 1. Fetch the email record
   const { data: email, error: fetchError } = await supabase
@@ -29,17 +62,72 @@ export async function POST(
     return NextResponse.json({ error: 'EMAIL_NOT_FOUND', message: 'Email not found.' }, { status: 404 });
   }
 
-  if (email.processed) {
-    return NextResponse.json({ error: 'ALREADY_PROCESSED', message: 'This email has already been processed.' }, { status: 409 });
-  }
+  // if (email.processed) {
+  //   return NextResponse.json({ error: 'ALREADY_PROCESSED', message: 'This email has already been processed.' }, { status: 409 });
+  // }
 
-  // 2. Mark as processing (prevents double-clicks triggering duplicate jobs)
-  await supabase
-    .from('emails')
-    .update({ processing_error: null })
-    .eq('id', emailId);
+  await supabase.from('emails').update({ processing_error: null }).eq('id', emailId);
 
   try {
+    // 2. Fetch full email and attachment from Gmail
+    const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
+    oauth2Client.setCredentials({
+      access_token: s.access_token,
+      refresh_token: s.refresh_token,
+    });
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const fullMsg = await gmail.users.messages.get({
+      userId: 'me',
+      id: email.gmail_message_id,
+      format: 'full',
+    });
+
+    const fullBodyText = getBodyText(fullMsg.data.payload) || email.body_snippet;
+    
+    let cvText = '';
+    
+    // Find attachment
+    const getAttachmentId = (payload: any): { id: string, mime: string } | null => {
+      if (!payload) return null;
+      if (payload.filename && payload.body?.attachmentId) {
+        return { id: payload.body.attachmentId, mime: payload.mimeType };
+      }
+      if (payload.parts) {
+        for (const p of payload.parts) {
+          const res = getAttachmentId(p);
+          if (res) return res;
+        }
+      }
+      return null;
+    };
+
+    const attachmentInfo = getAttachmentId(fullMsg.data.payload);
+    
+    if (attachmentInfo?.id) {
+      try {
+        const attachRes = await gmail.users.messages.attachments.get({
+          userId: 'me',
+          messageId: email.gmail_message_id,
+          id: attachmentInfo.id,
+        });
+        
+        if (attachRes.data.data) {
+          const buffer = Buffer.from(attachRes.data.data, 'base64url');
+          if (attachmentInfo.mime === 'application/pdf') {
+            const pdfData = await pdfParse(buffer);
+            cvText = pdfData.text;
+          } else {
+            // If it's a text/csv or doc, just try stringifying
+            cvText = buffer.toString('utf-8');
+          }
+        }
+      } catch (e) {
+        console.error('Failed to parse attachment', e);
+        cvText = 'Error reading attachment: ' + (e as Error).message;
+      }
+    }
+
     // 3. Classify the email with AI
     const classifyRes = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -47,7 +135,7 @@ export async function POST(
       messages: [
         {
           role: 'system',
-          content: `You are an AI recruiting assistant. Classify incoming emails and extract candidate information.
+          content: `You are an AI recruiting assistant. Classify incoming emails and extract candidate information from the email body AND attached CV text.
 Return a JSON object with:
 - classification: one of "job_application" | "follow_up" | "referral" | "inquiry" | "spam" | "other"
 - confidence: 0.0 to 1.0
@@ -56,7 +144,7 @@ Return a JSON object with:
 - current_company: string or null
 - skills: string[] (top skills mentioned, empty array if none)
 - experience_years: number or null
-- ai_score: number 0-100 or null (overall candidate quality score)
+- ai_score: number 0-100 or null (overall candidate quality score based on experience and skills)
 - ai_recommendation: "strong_yes" | "yes" | "maybe" | "no" | null
 - ai_strengths: string[] (2-3 key strengths, empty if not a job application)
 - summary: string (1-2 sentence plain-English summary of this email)`,
@@ -65,11 +153,14 @@ Return a JSON object with:
           role: 'user',
           content: `From: ${email.sender_name ?? ''} <${email.sender_email}>
 Subject: ${email.subject ?? '(no subject)'}
-Has attachment: ${email.has_attachment ? `Yes (${email.attachment_filename})` : 'No'}
-Body snippet: ${email.body_snippet ?? '(no body)'}`,
+Email Body:
+${fullBodyText.substring(0, 3000)}
+
+Attached CV Content:
+${cvText ? cvText.substring(0, 15000) : 'No CV Attached'}`,
         },
       ],
-      max_tokens: 500,
+      max_tokens: 800,
     });
 
     const raw  = classifyRes.choices[0]?.message?.content ?? '{}';
@@ -88,7 +179,6 @@ Body snippet: ${email.body_snippet ?? '(no body)'}`,
 
     // 5. If it's a job application, queue a create_candidate approval
     if (data.classification === 'job_application') {
-      // Create a draft candidate record
       const { data: candidate } = await supabase
         .from('candidates')
         .insert({
@@ -103,19 +193,17 @@ Body snippet: ${email.body_snippet ?? '(no body)'}`,
           ai_strengths:     data.ai_strengths  ?? [],
           stage:            'applied',
           source:           'email',
-          is_draft:         true, // Hidden until recruiter approves create_candidate
+          is_draft:         true, 
         })
         .select('id')
         .single();
 
       if (candidate) {
-        // Link the email to the candidate
         await supabase
           .from('emails')
           .update({ candidate_id: candidate.id })
           .eq('id', emailId);
 
-        // Queue the create_candidate approval for the recruiter to review
         await supabase.from('approvals').insert({
           recruiter_id:   recruiterId,
           action_type:    'create_candidate',
@@ -143,8 +231,8 @@ Body snippet: ${email.body_snippet ?? '(no body)'}`,
 
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error('Process error:', err);
 
-    // Record the error so the UI shows a Retry button
     await supabase
       .from('emails')
       .update({ processing_error: message })
