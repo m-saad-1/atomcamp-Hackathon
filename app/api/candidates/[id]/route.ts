@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jsonResponse, errorResponse } from '@/lib/api-response';
 import { auth } from '@/auth';
 import { createAdminClient } from '@/lib/supabase/server';
 
@@ -7,14 +8,14 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  if (!session?.user?.id || !session?.user?.organization_id) return errorResponse('UNAUTHORIZED', undefined, 401);
 
   const supabase = createAdminClient();
   const { data, error } = await supabase
-    .from('candidates').select('*').eq('id', params.id).single();
+    .from('candidates').select('*').eq('id', params.id).eq('organization_id', session.user.organization_id).single();
 
-  if (error || !data) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
-  return NextResponse.json({ candidate: data });
+  if (error || !data) return errorResponse('NOT_FOUND', undefined, 404);
+  return jsonResponse({ data: { candidate: data } });
 }
 
 export async function PATCH(
@@ -22,7 +23,7 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  if (!session?.user?.id || !session?.user?.organization_id) return errorResponse('UNAUTHORIZED', undefined, 401);
 
   const supabase = createAdminClient();
   const body     = await request.json();
@@ -30,7 +31,7 @@ export async function PATCH(
   // Stage change → create an approval rather than updating directly
   if (body.stage) {
     const { data: current } = await supabase
-      .from('candidates').select('stage, full_name').eq('id', params.id).single();
+      .from('candidates').select('stage, full_name').eq('id', params.id).eq('organization_id', session.user.organization_id).single();
 
     await supabase.from('approvals').insert({
       recruiter_id:   session.user.id,
@@ -44,11 +45,12 @@ export async function PATCH(
       related_entity: 'candidate',
       related_id:     params.id,
       status:         'pending',
+      organization_id: session.user.organization_id,
     });
 
     // Optimistic update — reverted if approval is rejected
-    await supabase.from('candidates').update({ stage: body.stage }).eq('id', params.id);
-    return NextResponse.json({ success: true, approval_created: true });
+    await supabase.from('candidates').update({ stage: body.stage }).eq('id', params.id).eq('organization_id', session.user.organization_id);
+    return jsonResponse({ data: { success: true, approval_created: true  } });
   }
 
   // Other allowed field updates
@@ -56,6 +58,6 @@ export async function PATCH(
   const updates = Object.fromEntries(
     Object.entries(body).filter(([k]) => allowed.includes(k))
   );
-  await supabase.from('candidates').update(updates).eq('id', params.id);
-  return NextResponse.json({ success: true });
+  await supabase.from('candidates').update(updates).eq('id', params.id).eq('organization_id', session.user.organization_id);
+  return jsonResponse({ data: { success: true  } });
 }

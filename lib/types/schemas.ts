@@ -11,7 +11,7 @@ const EmailType = z.enum([
 const ReplyTone = z.enum([
   'warm_invite', 'neutral_acknowledgment', 'polite_decline', 'request_more_info'
 ]);
-const DraftEmailType = z.enum([
+export const DraftEmailType = z.enum([
   'interview_invite', 'rejection', 'follow_up', 'info_request', 'offer_letter'
 ]);
 const SeniorityLevel = z.enum([

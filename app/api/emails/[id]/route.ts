@@ -1,10 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { jsonResponse, errorResponse } from '@/lib/api-response';
+import { logger } from '@/lib/logger';
 import { createClient } from '@supabase/supabase-js';
 const pdfParse = require('pdf-parse');
 import { callOpenAIJson } from '@/lib/openai/caller';
 import { auth } from '@/auth';
 import { getValidAccessToken } from '@/lib/gmail/auth';
-import { downloadFirstPdfAttachment } from '@/lib/gmail/attachments';
+import { findAttachmentParts, downloadAttachment } from '@/lib/gmail/attachments';
 import {
   EMAIL_CLASSIFICATION_PROMPT,
   RESUME_PARSING_PROMPT,
@@ -31,7 +33,7 @@ export async function POST(
   const emailId = params.id;
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+    return errorResponse('UNAUTHORIZED', undefined, 401);
   }
   const recruiter_id = session.user.id;
 
@@ -44,12 +46,7 @@ export async function POST(
       .single();
 
     if (emailError || !email) {
-      return NextResponse.json({
-        error: 'EMAIL_NOT_FOUND',
-        message: 'Email record not found.',
-        recovery: 'Verify the email ID.',
-        retryable: false,
-      }, { status: 404 });
+      return errorResponse('EMAIL_NOT_FOUND', 'Email record not found.', 404);
     }
 
     let attachment_buffer: Buffer | null = null;
@@ -64,16 +61,25 @@ export async function POST(
         );
         if (msgRes.ok) {
           const msg = await msgRes.json();
-          const attachment = await downloadFirstPdfAttachment(
-            recruiter_id, email.gmail_message_id, msg.payload?.parts ?? []
-          );
-          if (attachment) {
+          const parts: any[] = [];
+          findAttachmentParts(msg.payload?.parts ?? [], parts);
+          const pdfPart = parts.find(p => p.mimeType === 'application/pdf' || p.filename.toLowerCase().endsWith('.pdf'));
+          
+          if (pdfPart) {
+            const attachment = await downloadAttachment(
+              recruiter_id, 
+              email.gmail_message_id, 
+              pdfPart.attachmentId, 
+              pdfPart.filename, 
+              pdfPart.mimeType, 
+              pdfPart.size
+            );
             attachment_buffer = attachment.buffer;
             attachment_filename = attachment.filename;
           }
         }
-      } catch (e) {
-        console.error('Failed to download attachment during processing:', e);
+      } catch (e: unknown) {
+        logger.error('Failed to download attachment during processing', { error: e instanceof Error ? e.message : String(e) });
       }
     }
 
@@ -92,7 +98,7 @@ export async function POST(
         ai_classification: 'spam',
         ai_confidence: classification.confidence,
       }).eq('id', emailId);
-      return NextResponse.json({ skipped: true, reason: 'spam' });
+      return jsonResponse({ data: { skipped: true, reason: 'spam' } });
     }
 
     // ── Step 3: Parse resume attachment (if present) ─────────────────────────
@@ -112,8 +118,8 @@ export async function POST(
             const Tesseract = require('tesseract.js');
             const { data: { text } } = await Tesseract.recognize(buffer, 'eng');
             resumeText = text;
-          } catch (ocrErr) {
-            console.error('OCR failed:', ocrErr);
+          } catch (ocrErr: unknown) {
+            logger.error('OCR failed', { error: ocrErr instanceof Error ? ocrErr.message : String(ocrErr) });
           }
         }
         
@@ -130,8 +136,8 @@ export async function POST(
             maxTokens: 2000,
           });
         }
-      } catch (pdfErr) {
-        console.error('PDF parse error:', pdfErr);
+      } catch (pdfErr: unknown) {
+        logger.error('PDF parse error', { error: pdfErr instanceof Error ? pdfErr.message : String(pdfErr) });
         // Non-fatal — continue with email data only
       }
     }
@@ -310,24 +316,21 @@ export async function POST(
       await supabase.from('approvals').insert(approvals);
     }
 
-    return NextResponse.json({
-      success: true,
-      candidate_id: candidateId,
-      score: scoring?.total_score ?? null,
-      approvals_created: approvals.length,
+    return jsonResponse({
+      data: {
+        success: true,
+        candidate_id: candidateId,
+        score: scoring?.total_score ?? null,
+        approvals_created: approvals.length,
+      }
     });
 
-  } catch (err) {
-    console.error('Email processing pipeline error:', err);
+  } catch (err: unknown) {
+    logger.error('Email processing pipeline error', { error: err instanceof Error ? err.message : String(err) });
     await supabase.from('emails').update({
       processing_error: err instanceof Error ? err.message : String(err),
     }).eq('id', emailId);
 
-    return NextResponse.json({
-      error: 'PIPELINE_ERROR',
-      message: 'Email processing failed.',
-      recovery: 'Check processing_error field on the email record.',
-      retryable: true,
-    }, { status: 500 });
+    return errorResponse('PIPELINE_ERROR', 'Email processing failed.', 500);
   }
 }

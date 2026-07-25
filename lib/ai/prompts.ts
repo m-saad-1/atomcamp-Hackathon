@@ -37,10 +37,11 @@ Rules:
 `;
 
 export const RESUME_PARSING_PROMPT = `
-You are a precision resume parser. Convert unstructured resume text to structured JSON.
-The input is plain text extracted from a PDF resume.
+You are a precision resume data extraction engine.
+Convert unstructured resume text to structured JSON matching the candidate profile schema.
+The input is plain text extracted from a PDF or DOCX resume, or text from OCR.
 
-Respond ONLY with a valid JSON object. No markdown. No backticks.
+Respond ONLY with a valid JSON object matching the required structure exactly.
 
 {
   "full_name": string,
@@ -58,16 +59,18 @@ Respond ONLY with a valid JSON object. No markdown. No backticks.
   "work_history": [{ "role": string, "company": string, "duration": string, "responsibilities": string[] }],
   "certifications": string[],
   "languages": string[],
-  "ai_summary": string
+  "projects": [{ "title": string, "description": string, "technologies": string[] }]
 }
 
-Rules:
+STRICT CONSTRAINTS (Milestone 3 Compliance):
+- DO NOT infer information. Only capture explicit evidence from the text.
+- DO NOT generate an executive summary.
+- DO NOT score the candidate.
+- DO NOT analyze strengths or weaknesses.
 - full_name: if not determinable with confidence, use "Unknown Candidate".
 - experience_years: sum actual employment durations. If ambiguous, return null.
 - skills: only technologies, tools, frameworks explicitly named. No inferences.
-- ai_summary: exactly 2-3 sentences. Present tense. Factual. Only claims supported
-  by the resume text. Written to introduce candidate to a hiring manager.
-- work_history.responsibilities: max 3 per role, each under 20 words.
+- work_history.responsibilities: extract as literal bullet points from the text. Do not summarize.
 - education: include all entries found. year is graduation year if available.
 `;
 

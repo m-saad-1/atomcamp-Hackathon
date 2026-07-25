@@ -1,3 +1,5 @@
+import { logger } from '../logger';
+
 export async function notifySlack(
   message: string,
   candidateId?: string
@@ -7,7 +9,7 @@ export async function notifySlack(
     : null;
 
   if (!webhookUrl || !process.env.SLACK_CHANNEL_ID) {
-    console.warn('Slack not configured — skipping notification');
+    logger.warn('Slack not configured — skipping notification');
     return;
   }
 
@@ -46,11 +48,11 @@ export async function notifySlack(
 
     if (!res.ok) {
       const body = await res.text();
-      console.error('Slack notify failed:', res.status, body);
+      logger.error('Slack notify failed:', { status: res.status, body });
       // Non-fatal: Slack failure never blocks main pipeline
     }
-  } catch (err) {
-    console.error('Slack notify threw:', err);
+  } catch (err: unknown) {
+    logger.error('Slack notify threw:', { error: err instanceof Error ? err.message : String(err) });
     // Non-fatal
   }
 }

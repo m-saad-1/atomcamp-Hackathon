@@ -1,28 +1,20 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
-import { Providers } from "./providers";
+import type { Metadata } from 'next';
+import { Inter } from 'next/font/google';
+import { SessionProvider } from 'next-auth/react';
+import './globals.css';
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: "AI Recruiting Agent",
-  description: "Automated candidate parsing and scoring system",
+  title: 'AI Recruiting Agent',
+  description: 'Automated recruiter inbox operations',
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${inter.className} h-screen flex flex-col antialiased`}>
-        <Providers>
-          {children}
-          <Toaster />
-        </Providers>
+    <html lang="en">
+      <body className={inter.className}>
+        <SessionProvider>{children}</SessionProvider>
       </body>
     </html>
   );

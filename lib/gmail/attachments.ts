@@ -1,4 +1,6 @@
 import { getValidAccessToken } from './auth';
+import { createAdminClient } from '@/lib/supabase/server';
+import { gmail_v1 } from 'googleapis';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
@@ -13,15 +15,15 @@ export interface AttachmentResult {
  * Extract attachment metadata from Gmail message parts
  */
 export function findAttachmentParts(
-  parts: any[],
+  parts: gmail_v1.Schema$MessagePart[],
   result: Array<{ partId: string; filename: string; mimeType: string; attachmentId: string; size: number }>
 ): void {
   for (const part of parts) {
     if (part.filename && part.body?.attachmentId) {
       result.push({
-        partId: part.partId,
+        partId: part.partId ?? '',
         filename: part.filename,
-        mimeType: part.mimeType,
+        mimeType: part.mimeType ?? '',
         attachmentId: part.body.attachmentId,
         size: part.body.size ?? 0,
       });
@@ -73,14 +75,15 @@ export async function downloadAttachment(
 }
 
 /**
- * Download the first PDF attachment from a Gmail message.
- * Returns null if no PDF attachment is found.
+ * Download all supported attachments from a Gmail message and upload them to Supabase Storage.
+ * Returns an array of attachment metadata to be saved in the database.
  */
-export async function downloadFirstPdfAttachment(
+export async function processSupportedAttachments(
   userId: string,
   messageId: string,
-  messageParts: any[]
-): Promise<AttachmentResult | null> {
+  messageParts: gmail_v1.Schema$MessagePart[],
+  organizationId: string
+) {
   const parts: Array<{
     partId: string; filename: string; mimeType: string;
     attachmentId: string; size: number;
@@ -88,20 +91,68 @@ export async function downloadFirstPdfAttachment(
 
   findAttachmentParts(messageParts, parts);
 
-  const pdfPart = parts.find(
+  const supportedTypes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'application/rtf'
+  ];
+
+  const supportedParts = parts.filter(
     (p) =>
-      p.mimeType === 'application/pdf' ||
-      p.filename.toLowerCase().endsWith('.pdf')
+      supportedTypes.includes(p.mimeType) ||
+      p.filename.toLowerCase().match(/\.(pdf|doc|docx|txt|rtf)$/)
   );
 
-  if (!pdfPart) return null;
+  const results = [];
+  const supabase = createAdminClient();
 
-  return downloadAttachment(
-    userId,
-    messageId,
-    pdfPart.attachmentId,
-    pdfPart.filename,
-    pdfPart.mimeType,
-    pdfPart.size
-  );
+  for (const part of supportedParts) {
+    try {
+      const { buffer, sizeKb, filename, mimeType } = await downloadAttachment(
+        userId,
+        messageId,
+        part.attachmentId,
+        part.filename,
+        part.mimeType,
+        part.size
+      );
+
+      // Upload to Supabase Storage
+      const safeFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const storagePath = `${organizationId}/${messageId}/${safeFilename}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('attachments')
+        .upload(storagePath, buffer, {
+          contentType: mimeType,
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      results.push({
+        filename,
+        mimeType,
+        size_bytes: sizeKb * 1024,
+        storage_path: storagePath,
+        status: 'downloaded'
+      });
+    } catch (err) {
+      console.error(`Failed to process attachment ${part.filename}:`, err);
+      // We push a failed status to track it
+      results.push({
+        filename: part.filename,
+        mimeType: part.mimeType,
+        size_bytes: part.size,
+        storage_path: '',
+        status: 'failed'
+      });
+    }
+  }
+
+  return results;
 }

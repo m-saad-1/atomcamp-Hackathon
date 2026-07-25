@@ -1,31 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 import { auth } from '@/auth';
-import { createAdminClient } from '@/lib/supabase/server';
 
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from('approvals')
-    .select(`
-      id, action_type, action_payload, preview_label,
-      related_entity, related_id, status, retry_count, created_at
-    `)
-    .eq('status', 'pending')
-    .order('created_at', { ascending: false });
+export async function GET(req: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id || !session?.user?.organization_id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    const recruiterId = session.user.id;
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  
-  const mappedData = data?.map(a => ({
-    ...a,
-    candidates: a.related_entity === 'candidate' ? {
-      id: a.related_id,
-      full_name: (a.action_payload as any)?.full_name || 'Candidate',
-      ai_score: (a.action_payload as any)?.ai_score || null,
-    } : null
-  }));
+    const tab = req.nextUrl.searchParams.get('tab') || 'pending';
 
-  return NextResponse.json({ approvals: mappedData ?? [] });
+    let query = supabase
+      .from('actions')
+      .select(`
+        *,
+        candidates(full_name, current_role),
+        jobs(title)
+      `);
+      
+    if (tab === 'history') {
+      query = query.in('execution_status', ['completed', 'failed', 'rejected']);
+    } else {
+      query = query.eq('execution_status', 'pending_approval');
+    }
+
+    const { data: actions, error } = await query
+      .eq('organization_id', session.user.organization_id)
+      .eq('recruiter_id', recruiterId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    return NextResponse.json({ approvals: actions });
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Approvals GET Error:', msg);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  }
 }

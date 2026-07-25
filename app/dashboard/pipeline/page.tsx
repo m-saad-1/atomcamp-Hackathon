@@ -61,9 +61,9 @@ export default function PipelinePage() {
   }
 
   return (
-    <div className="p-6 h-full">
+    <main className="p-6 h-full" aria-labelledby="page-title">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-foreground">Pipeline</h1>
+        <h1 id="page-title" className="text-xl font-semibold text-foreground">Pipeline</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           Drag candidates between stages. Moving a card creates an approval request.
         </p>
@@ -131,6 +131,6 @@ export default function PipelinePage() {
           );
         })}
       </div>
-    </div>
+    </main>
   );
 }

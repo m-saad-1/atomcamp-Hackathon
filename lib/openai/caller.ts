@@ -1,5 +1,6 @@
 import { openai } from './client';
 import { z } from 'zod';
+import { logger } from '../logger';
 
 const MAX_RETRIES = 3;
 const RETRY_DELAYS_MS = [0, 2000, 5000];
@@ -47,9 +48,9 @@ export async function callOpenAIJson<T>(options: {
       // Zod validation — throws ZodError with field-level details if invalid
       return schema.parse(parsed);
 
-    } catch (err) {
+    } catch (err: unknown) {
       lastError = err;
-      console.error(`OpenAI call attempt ${attempt + 1} failed:`, err);
+      logger.error(`OpenAI call attempt ${attempt + 1} failed`, { error: err instanceof Error ? err.message : String(err) });
     }
   }
 

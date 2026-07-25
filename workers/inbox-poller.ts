@@ -1,6 +1,7 @@
 import './polyfill';
 import * as cron from 'node-cron';
 import { createClient } from '@supabase/supabase-js';
+import { logger } from '../lib/logger';
 import { pollInbox } from '../lib/gmail/poller';
 
 const supabase = createClient(
@@ -10,10 +11,20 @@ const supabase = createClient(
 
 const INTERVAL = process.env.INBOX_POLL_INTERVAL_SECONDS ?? '60';
 
+let isPolling = false;
+let isShuttingDown = false;
+
 console.log(`Inbox poller starting — interval: ${INTERVAL}s`);
 
-cron.schedule(`*/${INTERVAL} * * * * *`, async () => {
-  console.log(`[${new Date().toISOString()}] Polling inboxes...`);
+const task = cron.schedule(`*/${INTERVAL} * * * * *`, async () => {
+  if (isShuttingDown) return;
+  if (isPolling) {
+    logger.warn('Previous poll still running. Skipping this cycle.');
+    return;
+  }
+  
+  isPolling = true;
+  logger.info(`[${new Date().toISOString()}] Polling inboxes...`);
 
   // Get all recruiter user IDs that have a Gmail session
   const { data: sessions } = await supabase
@@ -22,17 +33,34 @@ cron.schedule(`*/${INTERVAL} * * * * *`, async () => {
     .eq('provider', 'google');
 
   if (!sessions || sessions.length === 0) {
-    console.log('No authenticated recruiters found. Skipping poll.');
+    logger.info('No authenticated recruiters found. Skipping poll.');
+    isPolling = false;
     return;
   }
 
   for (const { user_id } of sessions) {
+    if (isShuttingDown) break;
     try {
       await pollInbox(user_id);
-      console.log(`Polled inbox for user ${user_id}`);
-    } catch (err) {
+      logger.info(`Polled inbox for user ${user_id}`);
+    } catch (err: unknown) {
       // Log but do not crash the poller — other users still get polled
-      console.error(`Poll failed for user ${user_id}:`, err);
+      logger.error(`Poll failed for user ${user_id}`, { error: err instanceof Error ? err.message : String(err) });
     }
   }
+  
+  isPolling = false;
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received. Shutting down poller gracefully...');
+  isShuttingDown = true;
+  task.stop();
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT received. Shutting down poller gracefully...');
+  isShuttingDown = true;
+  task.stop();
 });

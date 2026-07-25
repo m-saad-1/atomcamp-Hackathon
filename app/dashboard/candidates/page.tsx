@@ -2,33 +2,17 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { SCORE_COLOR, REC_LABEL, STAGE_COLORS } from '@/lib/utils';
 
 type Candidate = {
   id: string; full_name: string; email: string;
   current_role: string | null; current_company: string | null;
   skills: string[]; ai_score: number | null;
-  ai_recommendation: string | null; stage: string;
+  ai_recommendation: string | null; stage: string; duplicate_status: string;
+  resumes?: { count: number }[];
 };
 
-const SCORE_COLOR = (s: number | null) =>
-  s == null ? 'bg-gray-100 text-gray-500' :
-  s >= 80   ? 'bg-green-100 text-green-700' :
-  s >= 60   ? 'bg-amber-100 text-amber-700' :
-              'bg-red-100 text-red-700';
 
-const REC_LABEL: Record<string, string> = {
-  strong_yes: '⭐ Strong Yes', yes: '✓ Yes', maybe: '~ Maybe', no: '✗ No',
-};
-
-const STAGE_COLORS: Record<string, string> = {
-  applied:     'bg-blue-50 text-blue-700',
-  screening:   'bg-purple-50 text-purple-700',
-  interview:   'bg-amber-50 text-amber-700',
-  final_round: 'bg-orange-50 text-orange-700',
-  offered:     'bg-green-50 text-green-700',
-  hired:       'bg-green-100 text-green-800',
-  rejected:    'bg-gray-100 text-gray-500',
-};
 
 export default function CandidatesPage() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -50,25 +34,29 @@ export default function CandidatesPage() {
   }, [search, stage]);
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <main className="p-6 max-w-6xl mx-auto" aria-labelledby="page-title">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">Candidates</h1>
+          <h1 id="page-title" className="text-xl font-semibold text-foreground">Candidates</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Profiles created from processed emails and uploaded resumes
           </p>
         </div>
-        <span className="text-sm text-muted-foreground">{candidates.length} profiles</span>
+        <span className="text-sm text-muted-foreground" aria-live="polite">
+          {candidates.length} profiles
+        </span>
       </div>
 
       <div className="flex gap-3 mb-6">
         <input
           type="text" placeholder="Search name, email, role…"
+          aria-label="Search candidates"
           value={search} onChange={(e) => setSearch(e.target.value)}
           className="flex-1 rounded-lg border border-input bg-background px-3 py-2
                      text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
         />
         <select
+          aria-label="Filter by stage"
           value={stage} onChange={(e) => setStage(e.target.value)}
           className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
         >
@@ -101,7 +89,14 @@ export default function CandidatesPage() {
               className="bg-card border border-border rounded-xl p-4 hover:border-ring/50 transition-colors block">
               <div className="flex items-start justify-between mb-2">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">{c.full_name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-foreground truncate">{c.full_name}</p>
+                    {c.duplicate_status === 'pending_review' && (
+                      <span className="text-[10px] font-medium bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-sm">
+                        Duplicate Review
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground truncate">
                     {c.current_role ?? 'Unknown role'}
                     {c.current_company ? ` at ${c.current_company}` : ''}
@@ -124,9 +119,16 @@ export default function CandidatesPage() {
               </div>
 
               <div className="flex items-center justify-between">
-                <span className={`text-xs px-2 py-0.5 rounded-full ${STAGE_COLORS[c.stage] ?? ''}`}>
-                  {c.stage.replace('_', ' ')}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${STAGE_COLORS[c.stage] ?? ''}`}>
+                    {c.stage.replace('_', ' ')}
+                  </span>
+                  {c.resumes?.[0]?.count ? (
+                    <span className="text-xs text-muted-foreground border px-1.5 py-0.5 rounded-md bg-muted/30">
+                      {c.resumes[0].count} Resume{c.resumes[0].count > 1 ? 's' : ''}
+                    </span>
+                  ) : null}
+                </div>
                 {c.ai_recommendation && (
                   <span className="text-xs text-muted-foreground">
                     {REC_LABEL[c.ai_recommendation] ?? c.ai_recommendation}
@@ -136,6 +138,6 @@ export default function CandidatesPage() {
             </Link>
           ))}
       </div>
-    </div>
+    </main>
   );
 }

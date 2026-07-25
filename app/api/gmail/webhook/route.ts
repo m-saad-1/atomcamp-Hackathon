@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jsonResponse, errorResponse } from '@/lib/api-response';
+import { logger } from '@/lib/logger';
+import { z } from 'zod';
 import { pollInbox } from '@/lib/gmail/poller';
 import { createClient } from '@supabase/supabase-js';
 
@@ -11,12 +14,18 @@ export async function POST(request: NextRequest) {
   // Gap 6: Gmail Pub/Sub webhook implementation
   // Google sends the message via Pub/Sub to this webhook.
   
-  const body = await request.json();
-  const message = body?.message;
+  const payloadSchema = z.object({
+    message: z.object({
+      data: z.string()
+    })
+  });
 
-  if (!message || !message.data) {
-    return NextResponse.json({ error: 'INVALID_PAYLOAD' }, { status: 400 });
+  const parseResult = payloadSchema.safeParse(await request.json());
+  if (!parseResult.success) {
+    return errorResponse('INVALID_PAYLOAD', 'Message data string missing', 400);
   }
+
+  const message = parseResult.data.message;
 
   try {
     const dataString = Buffer.from(message.data, 'base64').toString('utf-8');
@@ -33,15 +42,15 @@ export async function POST(request: NextRequest) {
       if (user) {
         // Trigger the poller for this specific user
         // We don't await so the webhook can return 200 immediately
-        pollInbox(user.id).catch(err => {
-          console.error(`Webhook poll failed for ${emailAddress}:`, err);
+        pollInbox(user.id).catch((err: unknown) => {
+          logger.error(`Webhook poll failed for ${emailAddress}`, { error: err instanceof Error ? err.message : String(err) });
         });
       }
     }
 
-    return NextResponse.json({ success: true });
-  } catch (err) {
-    console.error('Webhook processing failed:', err);
-    return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
+    return jsonResponse({ data: { success: true  } });
+  } catch (err: unknown) {
+    logger.error('Webhook processing failed', { error: err instanceof Error ? err.message : String(err) });
+    return errorResponse('INTERNAL_ERROR', undefined, 500);
   }
 }

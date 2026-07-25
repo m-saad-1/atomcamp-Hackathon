@@ -1,20 +1,22 @@
 import NextAuth from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
 import { createClient } from '@supabase/supabase-js';
+import { env } from '@/lib/env';
+import { logger } from '@/lib/logger';
 
 // Only instantiate the admin client when the key is actually a service-role key.
 // If it is mistakenly set to the anon/publishable key the upsert will fail due
 // to RLS – we catch that below and fall back gracefully.
 const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  env?.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  env?.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     GoogleProvider({
-      clientId:     process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId:     env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
       authorization: {
         params: {
           scope: [
@@ -68,8 +70,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             .single();
 
           if (error) {
-            console.warn('[auth] Supabase user upsert failed:', error.message);
-            console.warn('[auth] Check SUPABASE_SERVICE_ROLE_KEY in .env.local – it must be the secret service-role key, NOT the anon/publishable key.');
+            logger.warn('[auth] Supabase user upsert failed', { error: error.message });
+            logger.warn('[auth] Check SUPABASE_SERVICE_ROLE_KEY in .env.local – it must be the secret service-role key, NOT the anon/publishable key.');
+            throw new Error('Supabase user upsert failed');
           }
 
           if (user?.id) {
@@ -89,9 +92,55 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                 },
                 { onConflict: 'user_id,provider' }
               );
+
+            // Enforce organization membership
+            const { data: members } = await supabaseAdmin
+              .from('organization_members')
+              .select('organization_id, role')
+              .eq('user_id', user.id);
+
+            if (!members || members.length === 0) {
+              const { data: newOrg } = await supabaseAdmin
+                .from('organizations')
+                .insert({
+                  name: `${p.name || 'User'}'s Organization`,
+                  slug: `org-${user.id}`
+                })
+                .select('id')
+                .single();
+
+              if (newOrg) {
+                await supabaseAdmin
+                  .from('organization_members')
+                  .insert({
+                    organization_id: newOrg.id,
+                    user_id: user.id,
+                    role: 'owner'
+                  });
+                token.organization_id = newOrg.id;
+                token.role = 'owner';
+              } else {
+                throw new Error('Failed to create organization');
+              }
+            } else {
+              token.organization_id = members[0].organization_id;
+              token.role = members[0].role;
+            }
+
+            // Seed Gmail integration status
+            if (token.organization_id && account.scope?.includes('gmail')) {
+              await supabaseAdmin.from('integration_registry').upsert({
+                organization_id: token.organization_id,
+                service: 'gmail',
+                status: 'connected',
+                metadata: { scope: account.scope },
+                updated_at: new Date().toISOString()
+              }, { onConflict: 'organization_id,service' });
+            }
           }
-        } catch (err) {
-          console.error('[auth] Supabase error during sign-in:', err);
+        } catch (err: unknown) {
+          logger.error('[auth] Supabase error during sign-in', { error: err instanceof Error ? err.message : String(err) });
+          throw new Error('Database initialization failed during sign-in. Please try again.');
         }
       }
 
@@ -104,7 +153,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             .eq('email', token.email as string)
             .single();
 
-          if (user?.id) token.db_user_id = user.id;
+          if (user?.id) {
+            token.db_user_id = user.id;
+            const { data: members } = await supabaseAdmin
+              .from('organization_members')
+              .select('organization_id, role')
+              .eq('user_id', user.id);
+            if (members && members.length > 0) {
+              token.organization_id = members[0].organization_id;
+              token.role = members[0].role;
+            }
+          }
         } catch {
           // silently ignore – fallback below covers this
         }
@@ -120,13 +179,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.name  = (token.name    ?? session.user.name)  as string;
       session.user.image = (token.picture ?? session.user.image) as string;
       session.user.email = (token.email   ?? session.user.email) as string;
+      session.user.organization_id = (token.organization_id as string | undefined) ?? null;
+      session.user.role  = (token.role as string | undefined) ?? null;
 
       // Expose OAuth tokens server-side so API routes can call Gmail directly
       // without depending on the Supabase sessions table being populated.
       // These are never sent to the browser (JWT strategy = HttpOnly cookie only).
-      (session as any).access_token     = token.access_token     ?? null;
-      (session as any).refresh_token    = token.refresh_token    ?? null;
-      (session as any).token_expires_at = token.token_expires_at ?? null;
+      session.access_token     = (token.access_token as string | undefined) ?? null;
+      session.refresh_token    = (token.refresh_token as string | undefined) ?? null;
+      session.token_expires_at = (token.token_expires_at as number | undefined) ?? null;
 
       return session;
     },
