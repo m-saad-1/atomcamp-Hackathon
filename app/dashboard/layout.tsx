@@ -1,18 +1,8 @@
 import { auth } from '@/auth';
 import { redirect } from 'next/navigation';
-import Link from 'next/link';
 import Image from 'next/image';
 import { SignOutButton } from '@/components/layout/SignOutButton';
-
-const NAV_ITEMS = [
-  { href: '/dashboard',            label: 'Dashboard',  icon: '◻' },
-  { href: '/dashboard/inbox',      label: 'Inbox',      icon: '✉' },
-  { href: '/dashboard/candidates', label: 'Candidates', icon: '👤' },
-  { href: '/dashboard/pipeline',   label: 'Pipeline',   icon: '⋮⋮' },
-  { href: '/dashboard/approvals',  label: 'Approvals',  icon: '✓'  },
-  { href: '/dashboard/duplicates', label: 'Duplicates', icon: '⚠'  },
-  { href: '/dashboard/jobs',       label: 'Jobs',       icon: '💼' },
-];
+import { DashboardWrapper } from '@/components/layout/dashboard-wrapper';
 
 export default async function DashboardLayout({
   children,
@@ -22,46 +12,44 @@ export default async function DashboardLayout({
   const session = await auth();
   if (!session?.user?.id) redirect('/auth/signin');
 
-  return (
-    <div className="flex h-screen bg-background overflow-hidden">
-      <aside className="w-56 border-r border-border flex flex-col shrink-0">
-        <div className="h-14 flex items-center px-4 border-b border-border">
-          <span className="font-semibold text-foreground text-sm">Recruiting Agent</span>
-        </div>
-
-        <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
-          {NAV_ITEMS.map((item) => (
-            <Link key={item.href} href={item.href}
-              className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-muted-foreground
-                         hover:bg-muted hover:text-foreground transition-colors">
-              <span>{item.icon}</span>
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-
-        <div className="px-3 py-3 border-t border-border">
-          <div className="flex items-center gap-2 mb-2">
-            {session.user?.image && (
-              <Image src={session.user.image} alt="Avatar"
-                width={28} height={28} className="rounded-full" />
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-foreground truncate">
-                {session.user?.name ?? 'Recruiter'}
-              </p>
-              <p className="text-xs text-muted-foreground truncate">
-                {session.user?.email}
-              </p>
-            </div>
+  const userProfile = (
+    <div className="p-4 border-t border-border shrink-0">
+      <div className="flex items-center gap-3 mb-3">
+        {session.user?.image ? (
+          <Image src={session.user.image} alt="Avatar" width={32} height={32} className="rounded-full" />
+        ) : (
+          <div className="w-8 h-8 rounded-full bg-brand flex items-center justify-center text-primary-foreground text-[12px] font-medium">
+            {(session.user?.name ?? 'R')[0]}
           </div>
-          <SignOutButton />
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-[14px] font-medium text-foreground truncate">
+            {session.user?.name ?? 'Recruiter'}
+          </p>
+          <p className="text-[12px] text-muted-foreground truncate">
+            {session.user?.email}
+          </p>
         </div>
-      </aside>
-
-      <main className="flex-1 overflow-y-auto">
-        {children}
-      </main>
+      </div>
+      <SignOutButton />
     </div>
+  );
+
+  const userMenu = (
+    <button aria-label="User Menu" className="flex items-center gap-2 pl-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 rounded-full">
+      {session.user?.image ? (
+        <Image src={session.user.image} alt="Avatar" width={32} height={32} className="rounded-full cursor-pointer" />
+      ) : (
+        <div className="w-8 h-8 rounded-full bg-brand flex items-center justify-center text-primary-foreground text-[12px] font-medium cursor-pointer">
+          {(session.user?.name ?? 'R')[0]}
+        </div>
+      )}
+    </button>
+  );
+
+  return (
+    <DashboardWrapper userProfile={userProfile} userMenu={userMenu}>
+      {children}
+    </DashboardWrapper>
   );
 }
