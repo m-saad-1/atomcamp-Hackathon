@@ -1,70 +1,56 @@
-"use client"
-import * as React from "react"
-import { usePathname } from "next/navigation"
-import { Menu, Bell, Plus, ChevronRight, HelpCircle, Sparkles } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Search } from "@/components/ui/search"
+'use client';
 
-export function Header({ onMenuClick, userMenu }: { onMenuClick: () => void, userMenu: React.ReactNode }) {
-  const pathname = usePathname()
-  const segments = pathname?.split('/').filter(Boolean) || []
-  
+import { Bell, HelpCircle, Search, Sparkles } from 'lucide-react';
+
+export function Header() {
   return (
-    <header className="h-[72px] sticky top-0 bg-white z-30 border-b border-border flex items-center px-6 shrink-0 justify-between">
+    <div className="flex h-full w-full items-center justify-between">
+      {/* Left: Breadcrumbs / Title */}
+      <div className="flex flex-col justify-center">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span>Acme Corp</span>
+          <span>/</span>
+          <span className="font-medium text-foreground">Dashboard</span>
+        </div>
+      </div>
+
+      {/* Center: Global Search */}
+      <div className="hidden md:flex flex-1 max-w-[360px] mx-8 relative group">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input 
+          type="text" 
+          placeholder="Search candidates, emails, jobs..." 
+          className="h-10 w-full rounded-xl border border-input bg-transparent pl-9 pr-10 text-sm focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary"
+        />
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+          ⌘K
+        </div>
+      </div>
+
+      {/* Right: Quick Actions & Profile */}
       <div className="flex items-center gap-4">
-        <button aria-label="Toggle Menu" onClick={onMenuClick} className="md:hidden text-muted-foreground hover:text-foreground mr-2">
-          <Menu size={24} />
+        {/* Quick AI Button */}
+        <button className="hidden sm:flex items-center gap-2 rounded-xl bg-[#F3E8FF] px-4 py-2 text-sm font-medium text-[#7C3AED] transition-colors hover:bg-[#E9D5FF]">
+          <Sparkles className="h-4 w-4" />
+          Ask AI
         </button>
-        
-        {/* Breadcrumb & Title */}
-        <div className="hidden md:flex flex-col justify-center">
-          <div className="flex items-center text-[12px] text-muted-foreground mb-0.5">
-            <span className="hover:text-foreground cursor-pointer transition-colors">Recrion</span>
-            <ChevronRight size={12} className="mx-1" />
-            <span className="hover:text-foreground cursor-pointer transition-colors">Dashboard</span>
-            {segments.length > 1 && (
-              <>
-                <ChevronRight size={12} className="mx-1" />
-                <span className="font-medium text-foreground capitalize">
-                  {segments[segments.length - 1]}
-                </span>
-              </>
-            )}
-          </div>
-          <div className="flex flex-col">
-            <h1 className="text-[16px] font-semibold text-foreground leading-none mb-1">
-              {segments.length > 1 ? segments[segments.length - 1].charAt(0).toUpperCase() + segments[segments.length - 1].slice(1) : 'Operations Overview'}
-            </h1>
-            <span className="text-[12px] text-muted-foreground leading-none">
-              {segments.length > 1 ? `Manage your ${segments[segments.length - 1]}` : 'Monitor your key recruiting metrics and activities.'}
-            </span>
-          </div>
-        </div>
-      </div>
 
-      <div className="flex items-center justify-center absolute left-1/2 -translate-x-1/2">
-        <div className="hidden lg:block">
-          <Search aria-label="Search" />
-        </div>
-      </div>
+        {/* Notifications */}
+        <button className="relative flex h-10 w-10 items-center justify-center rounded-full hover:bg-secondary transition-colors">
+          <Bell className="h-5 w-5 text-muted-foreground" />
+          <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-error" />
+        </button>
 
-      <div className="flex items-center gap-3">
-        <Button variant="ai" size="sm" className="hidden sm:flex h-[36px] rounded-full px-4 text-[13px]">
-          <Sparkles size={16} /> Ask AI
-        </Button>
-        <div className="flex items-center gap-1 border-r border-border pr-3">
-          <Button aria-label="Help" variant="ghost" size="icon" className="w-[36px] h-[36px] text-muted-foreground rounded-full">
-            <HelpCircle size={18} />
-          </Button>
-          <Button aria-label="Notifications" variant="ghost" size="icon" className="relative w-[36px] h-[36px] text-muted-foreground rounded-full">
-            <Bell size={18} />
-            <span className="absolute top-2 right-2 w-2 h-2 bg-error rounded-full border border-white" />
-          </Button>
-        </div>
-        <div className="pl-1 flex items-center">
-          {userMenu}
-        </div>
+        {/* Help */}
+        <button className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-secondary transition-colors">
+          <HelpCircle className="h-5 w-5 text-muted-foreground" />
+        </button>
+
+        {/* Profile Avatar */}
+        <button className="h-10 w-10 overflow-hidden rounded-full border border-border">
+          <div className="h-full w-full bg-gray-200" />
+        </button>
       </div>
-    </header>
-  )
+    </div>
+  );
 }

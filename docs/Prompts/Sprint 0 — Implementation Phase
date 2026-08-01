@@ -1,0 +1,167 @@
+# Sprint 0 — Implementation Phase
+
+The Sprint 0 Planning has been approved.
+
+Implement Sprint 0 completely.
+
+Do NOT redesign.
+
+Do NOT simplify.
+
+Do NOT skip any requirement.
+
+Everything must follow:
+
+System_design.md
+
+Dashboard.md
+
+05-onboarding-engineering.md
+
+Sprint_0_Implementation_Plan.md
+
+Sprint_0_Task_Breakdown.md
+
+---
+
+Implementation Order
+
+1.
+
+Project Initialization
+
+↓
+
+2.
+
+Development Infrastructure
+
+↓
+
+3.
+
+Design System
+
+↓
+
+4.
+
+Project Architecture
+
+↓
+
+5.
+
+State Management
+
+↓
+
+6.
+
+Forms & Validation
+
+↓
+
+7.
+
+Backend Foundation
+
+↓
+
+8.
+
+Database Foundation
+
+↓
+
+9.
+
+Application Shell
+
+↓
+
+10.
+
+Shared Components
+
+↓
+
+11.
+
+Motion & UX
+
+↓
+
+12.
+
+Quality Foundation
+
+↓
+
+13.
+
+Application Verification
+
+---
+
+Requirements
+
+Implement production-quality code.
+
+No placeholders.
+
+No TODOs.
+
+No mock implementations.
+
+No duplicate code.
+
+Use feature-first architecture.
+
+Follow the design system exactly.
+
+Implement:
+
+Responsive behavior
+
+Animations
+
+Accessibility
+
+Loading states
+
+Error states
+
+Success states
+
+Theme
+
+Providers
+
+Reusable components
+
+Shared utilities
+
+Application shell
+
+Compile continuously.
+
+Fix every error before continuing.
+
+The application must always remain runnable.
+
+At the end provide
+
+Completed Tasks
+
+Files Created
+
+Files Modified
+
+Packages Installed
+
+Architecture Decisions
+
+Remaining Work
+
+STOP.

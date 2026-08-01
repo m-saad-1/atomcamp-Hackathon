@@ -1,12 +1,10 @@
 import NextAuth from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
+import CredentialsProvider from 'next-auth/providers/credentials';
 import { createClient } from '@supabase/supabase-js';
+import bcrypt from 'bcryptjs';
 import { env } from '@/lib/env';
-import { logger } from '@/lib/logger';
 
-// Only instantiate the admin client when the key is actually a service-role key.
-// If it is mistakenly set to the anon/publishable key the upsert will fail due
-// to RLS – we catch that below and fall back gracefully.
 const supabaseAdmin = createClient(
   env?.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   env?.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
@@ -15,7 +13,7 @@ const supabaseAdmin = createClient(
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     GoogleProvider({
-      clientId:     env.GOOGLE_CLIENT_ID,
+      clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
       authorization: {
         params: {
@@ -28,8 +26,39 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             'https://www.googleapis.com/auth/gmail.modify',
           ].join(' '),
           access_type: 'offline',
-          prompt:      'consent',
+          prompt: 'consent',
         },
+      },
+    }),
+    CredentialsProvider({
+      name: 'Credentials',
+      credentials: {
+        email: { label: 'Email', type: 'email' },
+        password: { label: 'Password', type: 'password' },
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) return null;
+        
+        const email = (credentials.email as string).toLowerCase().trim();
+        
+        const { data: user } = await supabaseAdmin
+          .from('users')
+          .select('id, name, email, password_hash, email_verified, account_status')
+          .eq('email', email)
+          .single();
+
+        if (!user || !user.password_hash) return null; // User not found or signed up via OAuth
+        if (user.account_status !== 'active') throw new Error('Account suspended');
+
+        const isValid = await bcrypt.compare(credentials.password as string, user.password_hash);
+        if (!isValid) return null;
+
+        return {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          email_verified: user.email_verified,
+        };
       },
     }),
   ],
@@ -37,135 +66,71 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
 
   callbacks: {
-    async jwt({ token, account, profile }) {
-      // ── First sign-in: account & profile are present ──────────────────────
-      if (account && profile) {
-        const p = profile as Record<string, string>;
+    async jwt({ token, account, profile, user }) {
+      // 1. Initial sign-in (user object is only passed on first sign in)
+      if (user) {
+        token.db_user_id = user.id;
+        token.email_verified = (user as any).email_verified; // From Credentials
 
-        token.access_token     = account.access_token;
-        token.refresh_token    = account.refresh_token;
-        token.token_expires_at = account.expires_at
-          ? account.expires_at * 1000
-          : Date.now() + 3600 * 1000;
-        token.scope            = account.scope;
-        token.picture          = p.picture ?? null;
-        token.name             = p.name    ?? null;
-        token.email            = p.email   ?? null;
-        // Google's stable sub field – used as fallback id if DB is unavailable
-        token.google_sub       = account.providerAccountId;
+        // If Google OAuth Sign-in
+        if (account?.provider === 'google') {
+          token.access_token = account.access_token;
+          token.refresh_token = account.refresh_token;
+          token.token_expires_at = account.expires_at ? account.expires_at * 1000 : Date.now() + 3600 * 1000;
+          
+          const p = profile as Record<string, string>;
+          const email = p.email.toLowerCase().trim();
 
-        // Try to persist user in Supabase (may fail if service role key is wrong)
-        try {
-          const { data: user, error } = await supabaseAdmin
+          // Sync user to DB
+          const { data: dbUser } = await supabaseAdmin
             .from('users')
-            .upsert(
-              {
-                email:      p.email,
-                name:       p.name      ?? null,
-                avatar_url: p.picture   ?? null,
-              },
-              { onConflict: 'email' }
-            )
-            .select('id')
+            .upsert({ email, name: p.name, avatar_url: p.picture, email_verified: true, account_status: 'active' }, { onConflict: 'email' })
+            .select('id, email_verified')
             .single();
 
-          if (error) {
-            logger.warn('[auth] Supabase user upsert failed', { error: error.message });
-            logger.warn('[auth] Check SUPABASE_SERVICE_ROLE_KEY in .env.local – it must be the secret service-role key, NOT the anon/publishable key.');
-            throw new Error('Supabase user upsert failed');
+          if (dbUser) {
+            token.db_user_id = dbUser.id;
+            token.email_verified = dbUser.email_verified;
+
+            // Persist OAuth tokens
+            await supabaseAdmin.from('sessions').upsert({
+              user_id: dbUser.id,
+              provider: 'google',
+              access_token: account.access_token!,
+              refresh_token: account.refresh_token ?? null,
+              token_expires_at: token.token_expires_at as number,
+              scope: account.scope ?? null,
+            }, { onConflict: 'user_id,provider' });
           }
-
-          if (user?.id) {
-            token.db_user_id = user.id;
-
-            // Persist OAuth tokens for the Gmail poller
-            await supabaseAdmin
-              .from('sessions')
-              .upsert(
-                {
-                  user_id:          user.id,
-                  provider:         'google',
-                  access_token:     account.access_token!,
-                  refresh_token:    account.refresh_token ?? null,
-                  token_expires_at: token.token_expires_at as number,
-                  scope:            account.scope ?? null,
-                },
-                { onConflict: 'user_id,provider' }
-              );
-
-            // Enforce organization membership
-            const { data: members } = await supabaseAdmin
-              .from('organization_members')
-              .select('organization_id, role')
-              .eq('user_id', user.id);
-
-            if (!members || members.length === 0) {
-              const { data: newOrg } = await supabaseAdmin
-                .from('organizations')
-                .insert({
-                  name: `${p.name || 'User'}'s Organization`,
-                  slug: `org-${user.id}`
-                })
-                .select('id')
-                .single();
-
-              if (newOrg) {
-                await supabaseAdmin
-                  .from('organization_members')
-                  .insert({
-                    organization_id: newOrg.id,
-                    user_id: user.id,
-                    role: 'owner'
-                  });
-                token.organization_id = newOrg.id;
-                token.role = 'owner';
-              } else {
-                throw new Error('Failed to create organization');
-              }
-            } else {
-              token.organization_id = members[0].organization_id;
-              token.role = members[0].role;
-            }
-
-            // Seed Gmail integration status
-            if (token.organization_id && account.scope?.includes('gmail')) {
-              await supabaseAdmin.from('integration_registry').upsert({
-                organization_id: token.organization_id,
-                service: 'gmail',
-                status: 'connected',
-                metadata: { scope: account.scope },
-                updated_at: new Date().toISOString()
-              }, { onConflict: 'organization_id,service' });
-            }
-          }
-        } catch (err: unknown) {
-          logger.error('[auth] Supabase error during sign-in', { error: err instanceof Error ? err.message : String(err) });
-          throw new Error('Database initialization failed during sign-in. Please try again.');
         }
       }
 
-      // ── Subsequent requests: recover db_user_id if it went missing ─────────
-      if (!token.db_user_id && token.email) {
-        try {
-          const { data: user } = await supabaseAdmin
-            .from('users')
-            .select('id')
-            .eq('email', token.email as string)
-            .single();
+      // 2. Refresh DB user data (org membership, verification status) on subsequent checks
+      // We do this every time the token is evaluated to ensure middleware route guards work immediately.
+      // E.g., when they finish onboarding or verify email, the next request will pick it up.
+      if (token.db_user_id) {
+        const { data: dbUser } = await supabaseAdmin
+          .from('users')
+          .select('email_verified, account_status')
+          .eq('id', token.db_user_id)
+          .single();
 
-          if (user?.id) {
-            token.db_user_id = user.id;
-            const { data: members } = await supabaseAdmin
-              .from('organization_members')
-              .select('organization_id, role')
-              .eq('user_id', user.id);
-            if (members && members.length > 0) {
-              token.organization_id = members[0].organization_id;
-              token.role = members[0].role;
-            }
-          }
-        } catch {
-          // silently ignore – fallback below covers this
+        if (dbUser) {
+          token.email_verified = dbUser.email_verified;
+        }
+
+        const { data: members } = await supabaseAdmin
+          .from('organization_members')
+          .select('organization_id, role')
+          .eq('user_id', token.db_user_id)
+          .eq('status', 'active');
+          
+        if (members && members.length > 0) {
+          token.organization_id = members[0].organization_id;
+          token.role = members[0].role;
+        } else {
+          token.organization_id = null;
+          token.role = null;
         }
       }
 
@@ -173,28 +138,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
 
     async session({ session, token }) {
-      // Prefer the Supabase UUID; fall back to Google sub so session.user.id
-      // is ALWAYS a non-empty string after sign-in.
-      session.user.id    = (token.db_user_id ?? token.google_sub ?? token.sub) as string;
-      session.user.name  = (token.name    ?? session.user.name)  as string;
-      session.user.image = (token.picture ?? session.user.image) as string;
-      session.user.email = (token.email   ?? session.user.email) as string;
-      session.user.organization_id = (token.organization_id as string | undefined) ?? null;
-      session.user.role  = (token.role as string | undefined) ?? null;
+      session.user.id = (token.db_user_id ?? token.sub) as string;
+      session.user.organization_id = (token.organization_id as string) ?? null;
+      session.user.role = (token.role as string) ?? null;
+      (session.user as any).email_verified = token.email_verified ?? false;
 
-      // Expose OAuth tokens server-side so API routes can call Gmail directly
-      // without depending on the Supabase sessions table being populated.
-      // These are never sent to the browser (JWT strategy = HttpOnly cookie only).
-      session.access_token     = (token.access_token as string | undefined) ?? null;
-      session.refresh_token    = (token.refresh_token as string | undefined) ?? null;
-      session.token_expires_at = (token.token_expires_at as number | undefined) ?? null;
+      session.access_token = (token.access_token as string) ?? null;
+      session.refresh_token = (token.refresh_token as string) ?? null;
+      session.token_expires_at = (token.token_expires_at as number) ?? null;
 
       return session;
     },
   },
 
   pages: {
-    signIn: '/auth/signin',
-    error:  '/auth/error',
+    signIn: '/login',
+    error: '/login',
   },
 });
